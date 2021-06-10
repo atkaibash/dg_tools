@@ -7,11 +7,12 @@ import http.client
 import json
 import os
 
+
 def parse_args():
-    docsURL = "https://developers.deepgram.com/api-reference/speech-recognition-api#operation/transcribeAudio/properties/"
+    docsURL = "https://developers.deepgra'diarize=true&numerals=true'ence/speech-recognition-api#operation/transcribeAudio/properties/"
     p = argparse.ArgumentParser(
         description="""
-        A wrapper for the Deepgram transcription API. More info available at: 
+        A wrapper for the Deepgram transcription API. More info on the API available at: 
         https://developers.deepgram.com/api-reference/speech-recognition-api#operation/transcribeAudio/ 
         """,
         formatter_class=argparse.RawTextHelpFormatter,
@@ -35,7 +36,7 @@ def parse_args():
     p.add_argument(
         "--store-credentials",
         "-sc",
-        dest="creds",
+        dest="storeCreds",
         action="store_true",
         help="Store credentials into the environment variable DG_AUTH.",
     )
@@ -70,6 +71,14 @@ def parse_args():
         default=False,
         action="store_true",
         help="Read from local transcripts.",
+    )
+    p.add_argument(
+        "--keep",
+        "-k",
+        dest="keep",
+        default=False,
+        action="store_true",
+        help="Keep existing transcripts.",
     )
     p.add_argument(
         "--url",
@@ -125,28 +134,30 @@ def parse_args():
         dest="params",
         action="store",
         default=False,
-        help="Insert any additional parameters in one big string",
+        help="Insert any additional parameters in one big string Ex. 'diarize=true&numerals=true'",
     )
     p.add_argument(
         "--search",
         dest="search",
-        action="store",
-        default=False,
-        help="Search the audio file for the given words. \n{}search".format(docsURL),
+        action="append",
+        default=[],
+        help="Search the audio file for the given words. If --local is set, look only for previously searched words. \n{}search".format(docsURL),
     )
     p.add_argument(
         "--search-threshold",
-        dest="search-threshold",
+        "-st",
+        dest="search_threshold",
         action="store",
+        type=float,
         default=False,
-        help="Sets a threshold to only return searches results above that threshold. Values between [0-1].",
+        help="Sets a threshold to only return searches results with confidence values above the threshold. Values should be between [0-1].",
     )
     p.add_argument(
         "--fqdn",
         dest="fqdn",
         action="store",
         default="brain.deepgram.com",
-        help="Set the FQDN for your queries.",
+        help="Set the FQDN for your API queries. Default is brain.deepgram.com",
     )
     args = p.parse_args()
 
@@ -156,41 +167,49 @@ def parse_args():
 def parseCredentials(args):
     usr = ""
     passwd = ""
-
-    if not args.creds and "DG_AUTH" in os.environ:
+    # If the user didn't supply a username and if the creds are already in env then just use DG_AUTH from env.
+    if not args.storeCreds and "DG_AUTH" in os.environ:
         return os.environ["DG_AUTH"]
-
+    # Look for a user arg, if none prompt for username. 
     if args.user:
         usr = args.user
     else:
         usr = input("Username:")
-
+    #Look for password arg, if none prompt for password. 
     if not args.password:
         passwd = str(getpass.getpass("Password:"))
     else:
         passwd = str(args.password)
-
+    # Build the "username:auth" string and then encode it. 
     rawAuthBytes = str(str(usr) + ":" + str(passwd)).encode("utf-8")
-
     encodedAuth = base64.b64encode(rawAuthBytes).decode("utf-8")
-
-    if args.creds:
+    # Check if user set store creds and try to save the encoded auth to an environment variable. 
+    if args.storeCreds:
         shell = os.environ['SHELL']
+        # Determine the user shell to get the environment variable DG_AUTH set.  
         if  "zsh" in shell:
-            print ("Saving encoded credentials to DG_AUTH to your zsh profile.")
-            os.system("echo 'export DG_AUTH={}' >> ~/.zshrc".format(encodedAuth))
+            print ("Saving encoded credentials to DG_AUTH and to your zsh profile.")
+            try:
+                os.system("echo 'export DG_AUTH={}' >> ~/.zshrc".format(encodedAuth))
+            except:
+                print ("Unable to save credentials, please add {} to environment variable".format(encodedAuth))
         elif "bash" in shell: 
-            print ("Saving encoded credentials to DG_AUTH to your bash profile.")
-            os.system("echo 'export DG_AUTH={}' >> ~/.bash_profile".format(encodedAuth))
+            print ("Saving encoded credentials to DG_AUTH and to your bash profile.")
+            try:
+                os.system("echo 'export DG_AUTH={}' >> ~/.bash_profile".format(encodedAuth))
+            except:
+                print ("Unable to save credentials, please add {} to environment variable".format(encodedAuth))
         else:
             print("I'm not sure what your shell is. You can add DG_AUTH={} to your\
             environment variables".format(encodedAuth))
+
         os.system('export DG_AUTH={}'.format(encodedAuth))
 
     return encodedAuth
 
 
 def parseQuery(args):
+    #Walk through args from command that pertain to API queries. 
     apiParams = ""
     apiChar = "?"
     if args.model:
@@ -206,7 +225,8 @@ def parseQuery(args):
         apiParams += str(apiChar + "redact=" + str(args.redact))
         apiChar ="&"
     if args.search:
-        apiParams += str(apiChar + "search=" + str(args.search))
+        for searchString in args.search:
+            apiParams += str(apiChar + "search=" + str(searchString))
         apiChar ="&"
     if args.params:
         apiParams += str(apiChar + args.params)
@@ -214,8 +234,10 @@ def parseQuery(args):
 
 
 def getTranscipt(args, fileFromDir=False):
+    # Setup connection.
     conn = http.client.HTTPSConnection(str(args.fqdn))
     queryHeaders ={}
+    # Parse the input type and build the content-type and payload.
     if args.input_file:
         queryHeaders['content-type'] = 'binary/message-pack'
         payload = open(args.input_file, "rb")
@@ -230,17 +252,26 @@ def getTranscipt(args, fileFromDir=False):
         urlToAudio = str(input("Enter a URL of an audio file."))
         payload = "{\"url\":\"" + str(urlToAudio) + "\"}"
 
-    queryHeaders['Authorization'] = "Basic " + str(parseCredentials(args))
-
+    # Build the Auth header.
+    queryHeaders['Authorization'] = "Basic " + str(creds)
+    # Form the API request. 
     apiRequest = "/v2/listen?" + parseQuery(args)
-
+    # Stick it altogether. 
     conn.request("POST", apiRequest, payload, queryHeaders)
-
+    # Fire off the API call, get the data and return as a JSON object. 
     res = conn.getresponse()
     data = res.read()
     return json.loads(data.decode("utf-8"))
 
+def saveTranscript(transcriptData, outputFileName):
+    # Helper function to write transcripts. 
+    outputFile = open(outputFileName, "w")
+    outputFile.write(json.dumps(transcriptData))
+    outputFile.close()
+
+
 def readLocalTranscript(localTranscript):
+    # Helper function to read transcripts from disk. 
     rawTranscript = open(localTranscript)
     jsonTranscript = json.load(rawTranscript)
     rawTranscript.close()
@@ -248,22 +279,59 @@ def readLocalTranscript(localTranscript):
 
     
 def parseTranscript(queryData, args):
+    '''
+    Parse a transcript and do one of the following:
+    1) Return the full output. 
+    2) Return the transcrpit and the requested serach terms.
+    3) Just return the transcrpit.
+    '''
     returnedData = {}
-    if args.verbose:
+    searchData = {}
+    if args.verbose: # Return the full transcript.
         returnedData = queryData
-    elif args.search:
+    elif args.search: # Try to handle the supplied search terms. 
+        # Still grab the transcirpt.
         returnedData['transcript'] = queryData['results']['channels'][0]['alternatives'][0]['transcript']
-        returnedData['search'] = queryData['results']['channels'][0]['search']
-    else:
+        # Try to pull the search data. 
+        try:
+            searchData['search'] = queryData['results']['channels'][0]['search']
+        except:
+            print ("No search data found for transcript.")
+            return
+        print (args.search)
+        if args.search == ['all']: # Value for when you want all search terms returned.
+            returnedData['search'] = searchData['search']
+        else: # Otherwise parse the requested search terms in the current transcript. 
+            for searchTermData in searchData['search']: 
+                thisWord = searchTermData['query'] # Go through each stored search term.
+                if thisWord in args.search: # Check if the user requested it. 
+                    if args.search_threshold: # Check if search_threshold is set. 
+                        searchWordHits = { "hits":[]} # If so, make a temporary empty dict.
+                        for hit in searchTermData['hits']: # Go through all hits. 
+                            if hit['confidence'] >= args.search_threshold: # Check if confidence is above threshold.
+                                searchWordHits['hits'].append(hit) # If so append to temp hit dict. 
+                        if len(searchWordHits['hits']) > 0: # Check that we got atleast 1 hit.
+                            returnedData[thisWord]= searchWordHits # If so add the temp list to final results.
+                    else:
+                        returnedData[thisWord] = searchTermData # If search_threshold was not set return all hits.                
+    else: # Return just the transcript.
         justTranscript = queryData['results']['channels'][0]['alternatives'][0]['transcript']
         returnedData = justTranscript
 
+    # Print it to the console for now. 
     print(json.dumps(returnedData, indent=2, sort_keys=False))
-
+    # Return the results for maybe doing something with this later. 
     return returnedData
 
 
 def main():
+    '''
+    1) Parse Args
+    2) Set the output folder.
+    4) Make sure that if the user wants to parse local transripts that they provided a file or folder. 
+    5) Store creds.
+    6)  
+    '''
     args = parse_args()
 
     if args.output_folder: 
@@ -277,32 +345,41 @@ def main():
     if args.local and not (args.input_dir or args.input_file):
         print("You need to specify a file(-f) or director(-d) for --local processing.")
 
+    #Storing the creds in the global namespce to not have to pass them around. 
+    if not args.local:
+        global creds
+        creds = parseCredentials(args)
+
     if args.input_dir:
         for file in os.listdir(args.input_dir):
             inputFileName = os.path.join(args.input_dir, file)
             outputFileName = str(os.path.join(outputFolder, file)) + ".json"
-            if not args.local:
-                print ("Processing: " + str(inputFileName))
-                outputData = getTranscipt(args, inputFileName)
-                outputFile = open(outputFileName, "w")
-                outputFile.write(json.dumps(outputData))
-                outputFile.close()
-                parseTranscript(outputData, args)
-            else:
+            if args.local:
                 print("\nReading from {}".format(inputFileName))
                 parseTranscript(readLocalTranscript(inputFileName), args)
-    elif args.input_file:
-        if not args.local:
-            parseTranscript(getTranscipt(args), args)
-        else:
+            elif os.path.isfile(outputFileName) and args.keep:
+                print("Transcript already exists for audio file, and keep is set.")
+            else:
+                print ("\nProcessing: " + str(inputFileName))
+                outputData = getTranscipt(args, inputFileName)
+                saveTranscript(outputData, outputFileName)
+                parseTranscript(outputData, args) 
+    
+    if args.input_file:
+        if args.local:
             parseTranscript(readLocalTranscript(args.input_file), args)
-    elif args.url:
+        else:
+            print ("\nProcessing: " + str(args.input_file))
+            dirs, inputFileName = os.path.split(args.input_file)
+            outputFileName = str(os.path.join(outputFolder, inputFileName) + ".json")
+            outputData = getTranscipt(args, args.input_file)
+            saveTranscript(outputData, outputFileName)
+            parseTranscript(outputData, args)
+    
+    if args.url:
         parseTranscript(getTranscipt(args), args)
 
-    else:       
-        print("No transciption files specified.\nUse -h to read more about this script.")
         
-
 
 if __name__ == "__main__":
     main()
