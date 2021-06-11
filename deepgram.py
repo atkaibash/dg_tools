@@ -9,7 +9,7 @@ import os
 
 
 def parse_args():
-    docsURL = "https://developers.deepgra'diarize=true&numerals=true'ence/speech-recognition-api#operation/transcribeAudio/properties/"
+    docsURL = "https://developers.deepgram.com/api-reference/speech-recognition-api#operation/transcribeAudio/properties/"
     p = argparse.ArgumentParser(
         description="""
         A wrapper for the Deepgram transcription API. More info on the API available at: 
@@ -161,55 +161,72 @@ def parse_args():
     )
     args = p.parse_args()
 
+    if args.local and not (args.input_dir or args.input_file):
+        print("You need to specify a file(-f) or director(-d) for --local processing.")
+
     return args
 
 
 def parseCredentials(args):
+    '''
+    Look for stored credentials, if none found and none in the command, prompt for
+    username and password.
+    If --store-credentials set, then make some effort to set an environment variable
+    called DG_AUTH. 
+    Returns a base64 encoded string from username:password.
+    ''' 
     usr = ""
     passwd = ""
-    # If the user didn't supply a username and if the creds are already in env then just use DG_AUTH from env.
+    
     if not args.storeCreds and "DG_AUTH" in os.environ:
         return os.environ["DG_AUTH"]
-    # Look for a user arg, if none prompt for username. 
+
     if args.user:
         usr = args.user
     else:
         usr = input("Username:")
-    #Look for password arg, if none prompt for password. 
+ 
     if not args.password:
         passwd = str(getpass.getpass("Password:"))
     else:
         passwd = str(args.password)
+
     # Build the "username:auth" string and then encode it. 
     rawAuthBytes = str(str(usr) + ":" + str(passwd)).encode("utf-8")
     encodedAuth = base64.b64encode(rawAuthBytes).decode("utf-8")
     # Check if user set store creds and try to save the encoded auth to an environment variable. 
     if args.storeCreds:
-        shell = os.environ['SHELL']
-        # Determine the user shell to get the environment variable DG_AUTH set.  
+        shell = os.environ['SHELL']  
         if  "zsh" in shell:
             print ("Saving encoded credentials to DG_AUTH and to your zsh profile.")
             try:
-                os.system("echo 'export DG_AUTH={}' >> ~/.zshrc".format(encodedAuth))
+                os.system("echo 'export DG_AUTH={}' >> ~/.zshenv".format(encodedAuth))
             except:
-                print ("Unable to save credentials, please add {} to environment variable".format(encodedAuth))
+                print ("Unable to save credentials, please add DG_AUTH={} to environment variable".format(encodedAuth))
+            os.system('export DG_AUTH={}'.format(encodedAuth)) 
+            if  "DG_AUTH" not in os.environ:
+                print ("We encountered an issue getting DG_AUTH into this session\
+                it was saved to your profile and will appear when you restart the terminal.")
+
         elif "bash" in shell: 
             print ("Saving encoded credentials to DG_AUTH and to your bash profile.")
             try:
                 os.system("echo 'export DG_AUTH={}' >> ~/.bash_profile".format(encodedAuth))
             except:
-                print ("Unable to save credentials, please add {} to environment variable".format(encodedAuth))
+                print ("Unable to save credentials, please add DG_AUTH={} to environment variable".format(encodedAuth))
+            os.system('export DG_AUTH={}'.format(encodedAuth))
         else:
             print("I'm not sure what your shell is. You can add DG_AUTH={} to your\
             environment variables".format(encodedAuth))
-
-        os.system('export DG_AUTH={}'.format(encodedAuth))
+        
 
     return encodedAuth
 
 
 def parseQuery(args):
-    #Walk through args from command that pertain to API queries. 
+    '''
+    Walk through args from the command line that pertain to API queries.
+    ''' 
     apiParams = ""
     apiChar = "?"
     if args.model:
@@ -234,7 +251,9 @@ def parseQuery(args):
 
 
 def getTranscipt(args, fileFromDir=False):
-    # Setup connection.
+    '''
+    Build the API call to get the transcripts and return as a JSON object.
+    '''
     conn = http.client.HTTPSConnection(str(args.fqdn))
     queryHeaders ={}
     # Parse the input type and build the content-type and payload.
@@ -252,19 +271,17 @@ def getTranscipt(args, fileFromDir=False):
         urlToAudio = str(input("Enter a URL of an audio file."))
         payload = "{\"url\":\"" + str(urlToAudio) + "\"}"
 
-    # Build the Auth header.
     queryHeaders['Authorization'] = "Basic " + str(creds)
-    # Form the API request. 
     apiRequest = "/v2/listen?" + parseQuery(args)
-    # Stick it altogether. 
     conn.request("POST", apiRequest, payload, queryHeaders)
-    # Fire off the API call, get the data and return as a JSON object. 
+
+    # Submit the API call  
     res = conn.getresponse()
     data = res.read()
     return json.loads(data.decode("utf-8"))
 
 def saveTranscript(transcriptData, outputFileName):
-    # Helper function to write transcripts. 
+    # Helper function to write transcripts to disk. 
     outputFile = open(outputFileName, "w")
     outputFile.write(json.dumps(transcriptData))
     outputFile.close()
@@ -298,7 +315,6 @@ def parseTranscript(queryData, args):
         except:
             print ("No search data found for transcript.")
             return
-        print (args.search)
         if args.search == ['all']: # Value for when you want all search terms returned.
             returnedData['search'] = searchData['search']
         else: # Otherwise parse the requested search terms in the current transcript. 
@@ -318,9 +334,8 @@ def parseTranscript(queryData, args):
         justTranscript = queryData['results']['channels'][0]['alternatives'][0]['transcript']
         returnedData = justTranscript
 
-    # Print it to the console for now. 
     print(json.dumps(returnedData, indent=2, sort_keys=False))
-    # Return the results for maybe doing something with this later. 
+ 
     return returnedData
 
 
@@ -328,9 +343,12 @@ def main():
     '''
     1) Parse Args
     2) Set the output folder.
-    4) Make sure that if the user wants to parse local transripts that they provided a file or folder. 
     5) Store creds.
-    6)  
+    6) Parse the input for files.
+        a) Input dir
+        b) Input file
+        c) URL
+
     '''
     args = parse_args()
 
@@ -341,11 +359,7 @@ def main():
 
     if not os.path.isdir(outputFolder):
         os.mkdir(outputFolder)
-
-    if args.local and not (args.input_dir or args.input_file):
-        print("You need to specify a file(-f) or director(-d) for --local processing.")
-
-    #Storing the creds in the global namespce to not have to pass them around. 
+ 
     if not args.local:
         global creds
         creds = parseCredentials(args)
@@ -354,11 +368,11 @@ def main():
         for file in os.listdir(args.input_dir):
             inputFileName = os.path.join(args.input_dir, file)
             outputFileName = str(os.path.join(outputFolder, file)) + ".json"
-            if args.local:
-                print("\nReading from {}".format(inputFileName))
+            if args.local: 
+                print("\nReading {} from disk".format(inputFileName)) 
                 parseTranscript(readLocalTranscript(inputFileName), args)
             elif os.path.isfile(outputFileName) and args.keep:
-                print("Transcript already exists for audio file, and keep is set.")
+                print("Transcript already exists for audio file, and --keep is set.")
             else:
                 print ("\nProcessing: " + str(inputFileName))
                 outputData = getTranscipt(args, inputFileName)
@@ -377,7 +391,10 @@ def main():
             parseTranscript(outputData, args)
     
     if args.url:
-        parseTranscript(getTranscipt(args), args)
+        outputData = parseTranscript(getTranscipt(args), args)
+        if arg.output_folder:
+            outputFileName = str(arg.output_folder + ".json")
+            saveTranscript(outputData,outputFileName)
 
         
 
